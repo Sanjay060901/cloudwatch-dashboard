@@ -1,80 +1,51 @@
-import os
-import asyncio
-from datetime import datetime, timedelta
 import boto3
+import os
+import datetime
 
-from .cache import Cache
+REGION = os.getenv("AWS_DEFAULT_REGION", "ap-south-1")
+EC2_ID = os.getenv("EC2_ID", "")
 
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-POLL_PERIOD = int(os.getenv("POLL_PERIOD_SECONDS", "60"))
+ec2 = boto3.client("ec2", region_name=REGION)
+cw = boto3.client("cloudwatch", region_name=REGION)
 
-cloudwatch = boto3.client("cloudwatch", region_name=AWS_REGION)
+async def fetch_ec2_instances():
+    if EC2_ID:
+        response = ec2.describe_instances(InstanceIds=[EC2_ID])
+    else:
+        response = ec2.describe_instances()
 
-METRICS = [
-    {
-        "namespace": "AWS/EC2",
-        "metric_name": "CPUUtilization",
-        "dimensions": lambda: [
-            {"Name": "InstanceId", "Value": os.getenv("EC2_ID", "")}
-        ],
-        "stat": "Average",
-        "key": "ec2_cpu"
-    },
-    {
-        "namespace": "AWS/RDS",
-        "metric_name": "CPUUtilization",
-        "dimensions": lambda: [
-            {"Name": "DBInstanceIdentifier", "Value": os.getenv("RDS_ID", "")}
-        ],
-        "stat": "Average",
-        "key": "rds_cpu"
-    },
-    {
-        "namespace": "AWS/S3",
-        "metric_name": "BucketSizeBytes",
-        "dimensions": lambda: [
-            {"Name": "BucketName", "Value": os.getenv("S3_BUCKET", "")},
-            {"Name": "StorageType", "Value": "StandardStorage"}
-        ],
-        "stat": "Average",
-        "key": "s3_size"
-    }
-]
+    instances = []
+    for r in response["Reservations"]:
+        for i in r["Instances"]:
+            instances.append({
+                "InstanceId": i["InstanceId"],
+                "Type": i["InstanceType"],
+                "State": i["State"]["Name"],
+                "AZ": i["Placement"]["AvailabilityZone"]
+            })
+    return instances
 
-class Collector:
-    def __init__(self, cache: Cache):
-        self.cache = cache
+async def fetch_metrics(instance_id):
+    now = datetime.datetime.utcnow()
+    ago = now - datetime.timedelta(hours=1)
 
-    def get_metric(self, metric):
-        now = datetime.utcnow()
-        resp = cloudwatch.get_metric_statistics(
-            Namespace=metric["namespace"],
-            MetricName=metric["metric_name"],
-            Dimensions=[d for d in metric["dimensions"]() if d["Value"]],
-            StartTime=now - timedelta(minutes=10),
+    def metric(Name):
+        data = cw.get_metric_statistics(
+            Namespace="AWS/EC2",
+            MetricName=Name,
+            Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+            StartTime=ago,
             EndTime=now,
-            Period=60,
-            Statistics=[metric["stat"]]
+            Period=300,
+            Statistics=["Average"]
         )
-        points = resp.get("Datapoints", [])
-        if not points:
-            return None
 
-        latest = sorted(points, key=lambda p: p["Timestamp"])[-1]
+        return [d["Average"] for d in data["Datapoints"]]
 
-        return {
-            "value": latest.get(metric["stat"], None),
-            "timestamp": latest["Timestamp"].isoformat(),
-        }
-
-    async def run_once(self):
-        data = {"metrics": {}}
-        for m in METRICS:
-            data["metrics"][m["key"]] = self.get_metric(m)
-
-        await self.cache.set_latest(data)
-
-    async def start(self):
-        while True:
-            await self.run_once()
-            await asyncio.sleep(POLL_PERIOD)
+    return {
+        "CPUUtilization": metric("CPUUtilization"),
+        "NetworkIn": metric("NetworkIn"),
+        "NetworkOut": metric("NetworkOut"),
+        "DiskReadBytes": metric("DiskReadBytes"),
+        "DiskWriteBytes": metric("DiskWriteBytes"),
+    }
