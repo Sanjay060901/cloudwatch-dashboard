@@ -1,25 +1,27 @@
-import os
-import json
-from datetime import datetime
+import time
+from threading import Lock
 
-import aioredis
-
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-CACHE_KEY = "cloudwatch:latest"
-
-class Cache:
+class SimpleTTLCache:
     def __init__(self):
-        self.redis = None
+        self._store = {}
+        self._lock = Lock()
 
-    async def connect(self):
-        self.redis = aioredis.from_url(REDIS_URL)
+    def set(self, key, value, ttl_seconds):
+        expire = time.time() + ttl_seconds
+        with self._lock:
+            self._store[key] = (value, expire)
 
-    async def set_latest(self, payload: dict):
-        payload["updated_at"] = datetime.utcnow().isoformat()
-        await self.redis.set(CACHE_KEY, json.dumps(payload))
+    def get(self, key):
+        with self._lock:
+            item = self._store.get(key)
+            if not item:
+                return None
+            value, expire = item
+            if time.time() > expire:
+                del self._store[key]
+                return None
+            return value
 
-    async def get_latest(self):
-        val = await self.redis.get(CACHE_KEY)
-        if not val:
-            return None
-        return json.loads(val)
+    def clear(self):
+        with self._lock:
+            self._store.clear()
