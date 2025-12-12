@@ -1,92 +1,64 @@
-import React, { useEffect, useState, useRef } from "react";
-import * as echarts from "echarts";
+import React, { useEffect, useState } from "react";
+import Sidebar from "./components/Sidebar";
+import InstanceRow from "./components/InstanceRow";
+import MetricsPanel from "./components/MetricsPanel";
 import axios from "axios";
-import "./index.css";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const BACKEND = import.meta.env.VITE_BACKEND_URL;
 
 export default function App() {
-  const [data, setData] = useState(null);
-  const [status, setStatus] = useState("loading");
+  const [view, setView] = useState("instances");
+  const [instances, setInstances] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [metrics, setMetrics] = useState(null);
 
-  const cpuChartRef = useRef(null);
-  const lineChartRef = useRef(null);
-
-  const fetchMetrics = async () => {
-    try {
-      const res = await axios.get(`${API}/metrics/latest`);
-      setData(res.data);
-      setStatus("ok");
-    } catch (e) {
-      setStatus("no-data");
-    }
+  const loadInstances = async () => {
+    const res = await axios.get(`${BACKEND}/api/instances`);
+    setInstances(res.data);
   };
 
+  const loadMetrics = async () => {
+    if (!selected) return;
+    const res = await axios.get(`${BACKEND}/api/metrics/${selected}`);
+    setMetrics(res.data);
+  };
+  
+
   useEffect(() => {
-    fetchMetrics();
-    const id = setInterval(fetchMetrics, 5000);
-    return () => clearInterval(id);
+    loadInstances();
+    const timer = setInterval(loadInstances, 60000);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    if (!data) return;
-
-    const cpu = data.metrics?.ec2_cpu?.value;
-    const rds = data.metrics?.rds_cpu?.value;
-    const s3 = data.metrics?.s3_size?.value;
-
-    if (!cpuChartRef.current) {
-      cpuChartRef.current = echarts.init(document.getElementById("cpu-gauge"));
-    }
-    cpuChartRef.current.setOption({
-      series: [
-        {
-          type: "gauge",
-          progress: { show: true },
-          detail: { valueAnimation: true, formatter: "{value}%" },
-          data: [{ value: cpu ?? 0, name: "EC2 CPU" }],
-        },
-      ],
-    });
-
-    if (!lineChartRef.current) {
-      lineChartRef.current = echarts.init(
-        document.getElementById("line-chart")
-      );
-    }
-
-    lineChartRef.current.setOption({
-      tooltip: { trigger: "axis" },
-      legend: { data: ["EC2 CPU", "RDS CPU", "S3 Size"] },
-      xAxis: { type: "category", data: [data.updated_at] },
-      yAxis: { type: "value" },
-      series: [
-        {
-          name: "EC2 CPU",
-          type: "line",
-          data: [cpu ?? 0],
-        },
-        {
-          name: "RDS CPU",
-          type: "line",
-          data: [rds ?? 0],
-        },
-        {
-          name: "S3 Size",
-          type: "line",
-          data: [s3 ?? 0],
-        },
-      ],
-    });
-  }, [data]);
+    if (selected) loadMetrics();
+  }, [selected]);
 
   return (
-    <div className="container">
-      <h1>CloudWatch Live Dashboard</h1>
-      <p>Status: {status}</p>
+    <>
+      <Sidebar selected={view} setSelected={setView} />
+      <div style={{ marginLeft: "260px", padding: "20px" }}>
+        <h1 style={{ color: "#f5a623" }}>EC2 Dashboard</h1>
+        {view === "instances" && (
+          <div>
+            <h2>Instances</h2>
 
-      <div id="cpu-gauge" style={{ height: 250 }}></div>
-      <div id="line-chart" style={{ height: 300 }}></div>
-    </div>
+            {instances.map((i) => (
+              <InstanceRow key={i.InstanceId} instance={i} onSelect={setSelected} />
+            ))}
+
+            {instances.length === 0 && <p>No instances found.</p>}
+          </div>
+        )}
+
+        {view === "metrics" && selected && metrics && (
+          <MetricsPanel instanceId={selected} metrics={metrics} />
+        )}
+
+        {view === "metrics" && !selected && (
+          <p>Select an instance from the left menu.</p>
+        )}
+      </div>
+    </>
   );
 }
