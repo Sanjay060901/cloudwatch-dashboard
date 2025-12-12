@@ -1,33 +1,18 @@
-version: "3.8"
-
 services:
-  redis:
-    image: redis:7
-    container_name: redis
-    ports:
-      - "6379:6379"
-
   backend:
     build: ./backend
-    container_name: backend
+    env_file:
+      - .env
     environment:
-      - AWS_REGION=${AWS_REGION}
-      - REDIS_URL=${REDIS_URL}
-      - EC2_ID=${EC2_ID}
-      - RDS_ID=${RDS_ID}
-      - S3_BUCKET=${S3_BUCKET}
-      - POLL_PERIOD_SECONDS=${POLL_PERIOD_SECONDS}
+      - FLASK_ENV=production
     ports:
-      - "8000:8000"
-    depends_on:
-      - redis
+      - "5000:5000"
+    restart: unless-stopped
 
   frontend:
     build: ./frontend
-    container_name: frontend
-    environment:
-      - VITE_API_URL=http://backend:8000
+    env_file:
+      - .env
     ports:
-      - "8080:8080"
-    depends_on:
-      - backend
+      - "8080:80"
+    restart: unless-stopped
